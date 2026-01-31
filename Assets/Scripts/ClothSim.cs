@@ -3,12 +3,15 @@ using System.Collections.Generic;
 
 class ClothSim : MonoBehaviour
 {
+    public ConstraintMode constraintMode;
+    public BendConstraintMode bendConstraintMode;
     public MeshFilter meshFilter;
     public Node nodePrefab;
     public float stiffness = 50f;
     public float torqueStiffness = 25f;
     public float maxForce = 50f;
     public float maxTorque = 50f;
+    public float maxMoveDelta = .1f;
     public int iterations;
 
     Mesh oldMesh;
@@ -156,65 +159,147 @@ class ClothSim : MonoBehaviour
 
     void ResolveConstraints()
     {
-        foreach (EdgeConstraint c in constraints)
+        switch (constraintMode)
         {
-            Vector3 delta = c.b.transform.position - c.a.transform.position;
-            float dist = delta.magnitude;
-            if (dist < 1e-6f) {
-                continue;
-            }
+            case ConstraintMode.Force:
+                foreach (EdgeConstraint c in constraints)
+                {
+                    Vector3 delta = c.b.transform.position - c.a.transform.position;
+                    float dist = delta.magnitude;
+                    if (dist < 1e-6f) {
+                        continue;
+                    }
 
-            float error = dist - c.restLength;
-            Vector3 dir = delta / dist;
+                    float error = dist - c.restLength;
+                    Vector3 dir = delta / dist;
 
-            Vector3 force = dir * error * stiffness; // stiffness
-            force = Vector3.ClampMagnitude(force, maxForce);
+                    Vector3 force = dir * error * stiffness; // stiffness
+                    force = Vector3.ClampMagnitude(force, maxForce);
 
-            c.a.rb.AddForce( force, ForceMode.Force);
-            c.b.rb.AddForce(-force, ForceMode.Force);
+                    c.a.rb.AddForce( force, ForceMode.Force);
+                    c.b.rb.AddForce(-force, ForceMode.Force);
+                }
+                break;
+            case ConstraintMode.Direct:
+                foreach (var c in constraints)
+                {
+                    Vector3 pa = c.a.rb.position;
+                    Vector3 pb = c.b.rb.position;
+
+                    Vector3 delta = pb - pa;
+                    float dist = delta.magnitude;
+                    if (dist < 1e-6f) continue;
+
+                    // 误差
+                    float diff = dist - c.restLength;
+
+                    // 方向
+                    Vector3 dir = delta / dist;
+
+                    // 计算移动量（两边各移动一半）
+                    Vector3 correction = dir * (diff * 0.5f);
+
+                    // 限制最大位移
+                    if (correction.magnitude > 10f)
+                        correction = correction.normalized * 10f;
+
+                    // 更新位置
+                    c.a.rb.position += correction;
+                    c.b.rb.position -= correction;
+                }
+                break;
         }
     }
     void ResolveBendConstraints()
     {
-        foreach (var c in bendConstraints)
+        switch (bendConstraintMode)
         {
-            Vector3 pa = c.a.rb.position;
-            Vector3 pb = c.b.rb.position;
-            Vector3 pc = c.c.rb.position;
-            Vector3 pd = c.d.rb.position;
+            case BendConstraintMode.Force:
+                foreach (var c in bendConstraints)
+                {
+                    Vector3 pa = c.a.rb.position;
+                    Vector3 pb = c.b.rb.position;
+                    Vector3 pc = c.c.rb.position;
+                    Vector3 pd = c.d.rb.position;
 
-            // 两个三角形法线
-            Vector3 n0 = Vector3.Cross(pb - pa, pc - pa).normalized;
-            Vector3 n1 = Vector3.Cross(pb - pa, pd - pa).normalized;
+                    // 两个三角形法线
+                    Vector3 n0 = Vector3.Cross(pb - pa, pc - pa).normalized;
+                    Vector3 n1 = Vector3.Cross(pb - pa, pd - pa).normalized;
 
-            float dot = Mathf.Clamp(Vector3.Dot(n0, n1), -1f, 1f);
-            float angle = Mathf.Acos(dot);
+                    float dot = Mathf.Clamp(Vector3.Dot(n0, n1), -1f, 1f);
+                    float angle = Mathf.Acos(dot);
 
-            float error = angle - c.restAngle;
-            if (Mathf.Abs(error) < 1e-5f) continue;
+                    float error = angle - c.restAngle;
+                    if (Mathf.Abs(error) < 1e-5f) continue;
 
-            // dihedral axis
-            Vector3 axis = Vector3.Cross(n0, n1).normalized;
-            if (axis.sqrMagnitude < 1e-6f) continue;
+                    // dihedral axis
+                    Vector3 axis = Vector3.Cross(n0, n1).normalized;
+                    if (axis.sqrMagnitude < 1e-6f) continue;
 
-            // 计算对顶点施加的力
-            // XPBD / PBD simplification:
-            // 力的方向沿法线旋转梯度近似
-            Vector3 f_c = axis * error * torqueStiffness;
-            Vector3 f_d = -f_c;
+                    // 计算对顶点施加的力
+                    // XPBD / PBD simplification:
+                    // 力的方向沿法线旋转梯度近似
+                    Vector3 f_c = axis * error * torqueStiffness;
+                    Vector3 f_d = -f_c;
 
-            // 限制最大力
-            f_c = Vector3.ClampMagnitude(f_c, maxTorque);
-            f_d = Vector3.ClampMagnitude(f_d, maxTorque);
+                    // 限制最大力
+                    f_c = Vector3.ClampMagnitude(f_c, maxTorque);
+                    f_d = Vector3.ClampMagnitude(f_d, maxTorque);
 
-            // 施加力
-            c.c.rb.AddForce(f_c, ForceMode.Force);
-            c.d.rb.AddForce(f_d, ForceMode.Force);
+                    // 施加力
+                    c.c.rb.AddForce(f_c, ForceMode.Force);
+                    c.d.rb.AddForce(f_d, ForceMode.Force);
 
-            // 共享边的两个节点也可以施加一半的反作用力，让系统更稳定
-            Vector3 f_ab = -(f_c + f_d) * 0.5f;
-            c.a.rb.AddForce(f_ab, ForceMode.Force);
-            c.b.rb.AddForce(f_ab, ForceMode.Force);
+                    // 共享边的两个节点也可以施加一半的反作用力，让系统更稳定
+                    Vector3 f_ab = -(f_c + f_d) * 0.5f;
+                    c.a.rb.AddForce(f_ab, ForceMode.Force);
+                    c.b.rb.AddForce(f_ab, ForceMode.Force);
+                }
+                break;
+            case BendConstraintMode.Direct:
+                foreach (var c in bendConstraints)
+                {
+                    Vector3 pa = c.a.rb.position;
+                    Vector3 pb = c.b.rb.position;
+                    Vector3 pc = c.c.rb.position;
+                    Vector3 pd = c.d.rb.position;
+
+                    // 两个三角形法线
+                    Vector3 n0 = Vector3.Cross(pb - pa, pc - pa).normalized;
+                    Vector3 n1 = Vector3.Cross(pb - pa, pd - pa).normalized;
+
+                    float dot = Mathf.Clamp(Vector3.Dot(n0, n1), -1f, 1f);
+                    float angle = Mathf.Acos(dot);
+
+                    float deltaAngle = angle - c.restAngle;
+                    if (Mathf.Abs(deltaAngle) < 1e-5f) continue;
+
+                    // dihedral axis
+                    Vector3 axis = Vector3.Cross(n0, n1).normalized;
+                    if (axis.sqrMagnitude < 1e-6f) continue;
+
+                    // 简化梯度：只对 c 和 d 节点修改位置
+                    // 位移大小 = deltaAngle * stiffness * avgEdgeLength
+                    float moveMag = deltaAngle * stiffness;
+                    Vector3 moveC = axis * moveMag;
+                    Vector3 moveD = -axis * moveMag;
+
+                    // 限制最大位移
+                    if (moveC.magnitude > maxMoveDelta)
+                        moveC = moveC.normalized * maxMoveDelta;
+                    if (moveD.magnitude > maxMoveDelta)
+                        moveD = moveD.normalized * maxMoveDelta;
+
+                    // 更新节点位置
+                    c.c.rb.position += moveC;
+                    c.d.rb.position += moveD;
+
+                    // 共享边节点加半量反作用，增加稳定性
+                    Vector3 moveAB = -(moveC + moveD) * 0.5f;
+                    c.a.rb.position += moveAB;
+                    c.b.rb.position += moveAB;
+                }
+                break;
         }
     }
     #endregion
@@ -223,6 +308,18 @@ class ClothSim : MonoBehaviour
     {
         Vector3[] meshVerts = runtimeMesh.vertices;
 
+        // 1️⃣ 先计算所有节点位置的几何中心（world space）
+        Vector3 center = Vector3.zero;
+        foreach (var node in nodes)
+        {
+            center += node.transform.position;
+        }
+        center /= nodes.Count;
+
+        // 2️⃣ 把 meshFilter.transform 移到中心点
+        meshFilter.transform.position = center;
+
+        // 3️⃣ 将节点位置转换到 meshFilter.localSpace
         for (int i = 0; i < nodes.Count; i++)
         {
             Vector3 local = meshFilter.transform.InverseTransformPoint(
@@ -232,6 +329,7 @@ class ClothSim : MonoBehaviour
                 meshVerts[meshIdx] = local;
         }
 
+        // 4️⃣ 更新 Mesh
         runtimeMesh.vertices = meshVerts;
         runtimeMesh.RecalculateNormals();
     }
@@ -273,6 +371,18 @@ class ClothSim : MonoBehaviour
         list.Add(tri);
     }
     #endregion
+    public enum ConstraintMode
+    {
+        None,
+        Force,
+        Direct
+    }
+    public enum BendConstraintMode
+    {
+        None,
+        Force,
+        Direct
+    }
 }
 
 public class EdgeConstraint
