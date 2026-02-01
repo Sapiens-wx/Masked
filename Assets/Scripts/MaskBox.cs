@@ -18,6 +18,10 @@ public class MaskBox : Singleton<MaskBox>
         base.Awake();
         bc=GetComponent<BoxCollider2D>();
     }
+    void Start()
+    {
+        transform.DOMoveY(transform.position.y+.3f, 2f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine);
+    }
     void Update()
     {
         if (Input.GetMouseButtonDown(0)&&Time.time-lastSpawned>spawnInterval)
