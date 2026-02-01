@@ -42,6 +42,7 @@ public class GameManager : Singleton<GameManager>
     {
         WaitForSeconds wait=new WaitForSeconds(1f);
         while (true) {
+            if(gameEnded) yield break;
             float coverPercentage=Mathf.Round(10000f*CoverageDetector.inst.GetCoverage())/100f;
             scoreText.text=$"{coverPercentage}% masked";
             yield return wait;
